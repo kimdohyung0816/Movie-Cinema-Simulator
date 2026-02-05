@@ -1,0 +1,1313 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>2020515 김도형(영화관 시뮬레이터)</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: #000;
+      font-family: sans-serif;
+    }
+
+    canvas {
+      display: block;
+    }
+
+    /* CSS3DRenderer 컨테이너 (WebGL 위에 HTML UI를 띄우기 위함) */
+    #css3d-root {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 1;
+      /* WebGL(Canvas z-index:0)보다 위 */
+      pointer-events: none;
+      /* 기본: WebGL에는 클릭 전달 X */
+    }
+
+    .css3d-container {
+      width: 100%;
+      height: 100%;
+      pointer-events: auto;
+      /* CSS3D 레이어 내부 클릭 허용 */
+    }
+
+    /* 공통 UI (예약 버튼, 파일 선택, 모드 토글, 슬라이더 등) 스타일 */
+    .screen-ui {
+      background: rgba(255, 255, 255, 0.9);
+      border-radius: 6px;
+      padding: 6px;
+      display: inline-flex;
+      gap: 6px;
+      font-size: 13px;
+      pointer-events: auto;
+    }
+
+    .screen-ui input,
+    .screen-ui button {
+      padding: 4px;
+      font-size: 14px;
+    }
+
+    .screen-ui button {
+      cursor: pointer;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      transition: background-color 0.1s;
+    }
+
+    .screen-ui button:active {
+      background: #ddd;
+    }
+
+    /* “돌아가기” 버튼 스타일 */
+    #backBtn {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      z-index: 4;
+      /* CSS3D / 모드 토글보다 위 */
+      padding: 10px 16px;
+      font-size: 14px;
+      background: rgba(255, 255, 255, 0.9);
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      display: none;
+      /* 기본 숨김 */
+    }
+
+    /* “고/저사양 모드 토글” 버튼 스타일 */
+    #qualityToggle {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      z-index: 4;
+      padding: 8px 12px;
+      font-size: 14px;
+      background: rgba(255, 255, 255, 0.9);
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    /* 천장 형광등 밝기 슬라이더 (고사양 모드 전용) */
+    #ceilingLightControl {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 3;
+      /* “돌아가기” 버튼보단 아래, CSS3D 위 */
+      background: rgba(255, 255, 255, 0.8);
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 14px;
+      color: #000;
+      display: none;
+      /* 고사양 모드에서만 보이도록 */
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    #ceilingLightControl label {
+      font-size: 13px;
+    }
+
+    #ceilingLightControl input[type="range"] {
+      width: 160px;
+      cursor: pointer;
+    }
+
+    /* 스크린 면광원 밝기 슬라이더 (고사양 모드 전용) */
+    #screenLightControl {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 3;
+      background: rgba(255, 255, 255, 0.8);
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 14px;
+      color: #000;
+      display: none;
+      /* 고사양 모드에서만 보이도록 */
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    #screenLightControl label {
+      font-size: 13px;
+    }
+
+    #screenLightControl input[type="range"] {
+      width: 160px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- 1) WebGL 캔버스는 스크립트가 append 합니다. -->
+  <!-- 2) CSS3DRenderer 전용 DOM -->
+  <div id="css3d-root"></div>
+
+  <!-- 3) 천장 형광등 밝기 슬라이더 (고사양 모드 전용) -->
+  <div id="ceilingLightControl">
+    <label for="ceilingSlider">천장 형광등 밝기:</label>
+    <input type="range" id="ceilingSlider" min="0" max="2" step="0.01" value="1">
+  </div>
+
+  <!-- 4) 스크린 면광원 밝기 슬라이더 (고사양 모드 전용) -->
+  <div id="screenLightControl">
+    <label for="screenSlider">빈스크린 광원 밝기:</label>
+    <input type="range" id="screenSlider" min="0" max="2" step="0.01" value="1">
+  </div>
+
+  <!-- 5) “돌아가기” 버튼 -->
+  <button id="backBtn">돌아가기</button>
+
+  <!-- 6) 고/저사양 모드 토글 버튼 -->
+  <button id="qualityToggle">고사양 모드 변환</button>
+
+  <!-- Three.js 모듈 로딩 (r0.160.1) -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.1/build/three.module.js",
+      "css3d": "https://unpkg.com/three@0.160.1/examples/jsm/renderers/CSS3DRenderer.js",
+      "text": "https://unpkg.com/three@0.160.1/examples/jsm/geometries/TextGeometry.js",
+      "font": "https://unpkg.com/three@0.160.1/examples/jsm/loaders/FontLoader.js"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { CSS3DRenderer, CSS3DObject } from 'css3d';
+    import { TextGeometry } from 'text';
+    import { FontLoader } from 'font';
+
+
+    // ───────────────────────────────────────────────────────
+    // A) 커스텀 Phong 셰이더 정의
+    // ───────────────────────────────────────────────────────
+    const customVertexShader = `
+  precision highp float;
+  varying vec3 vNormal;
+  varying vec3 vFragPos;
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+    vFragPos = mvPos.xyz;
+    vNormal = normalize(mat3(modelViewMatrix) * normal);
+    gl_Position = projectionMatrix * mvPos;
+  }
+`;
+
+    const customFragmentShader = `
+  precision highp float;
+  varying vec3 vNormal;
+  varying vec3 vFragPos;
+  varying vec2 vUv;
+  uniform sampler2D uVideoTex;
+  uniform vec3 lightPos;
+  uniform vec3 viewPos;
+  uniform vec3 ambientColor;
+  uniform vec3 diffuseColor;
+  uniform vec3 specularColor;
+  uniform float shininess;
+  void main() {
+    vec4 videoCol = texture2D(uVideoTex, vUv);
+
+    // Ambient
+    vec3 ambient = ambientColor * videoCol.rgb;
+
+    // Diffuse (Lambert)
+    vec3 norm = normalize(vNormal);
+    vec3 L = normalize(lightPos - vFragPos);
+    float diff = max(dot(norm, L), 0.0);
+    vec3 diffuse = diff * diffuseColor * videoCol.rgb;
+
+    // Specular (Blinn-Phong)
+    vec3 V = normalize(viewPos - vFragPos);
+    vec3 H = normalize(L + V);
+    float spec = pow(max(dot(norm, H), 0.0), shininess);
+    vec3 specular = spec * specularColor;
+
+    // 합산
+    vec3 color = ambient + diffuse + specular;
+    gl_FragColor = vec4(color, videoCol.a);
+  }
+`;
+    //========================================
+    // 전역 변수 선언
+    //========================================
+    let scene, camera, renderer, cssRenderer;
+    let controlsEnabled = true;        // 이동/회전 허용 플래그
+    let cameraMoving = false;          // 예약 후 카메라 이동 여부
+    let cameraTargetPos = new THREE.Vector3();
+    let cameraTargetLookAt = new THREE.Vector3();
+    let origCamPos = new THREE.Vector3();
+    let origCamLookAt = new THREE.Vector3();
+    let showBackButtonOnArrival = false;
+
+
+    const raycaster = new THREE.Raycaster();  // 클릭 판정용
+    const mouse = new THREE.Vector2();
+    let selectedSeat = null;                  // 클릭된 좌석
+
+    const clickableGroups = [];               // 의자 그룹 및 문 Mesh 저장
+    let screenPointLight;  // ✅ 추가: 실제 그림자를 줄 조명
+
+    // 키보드 이동 (W/A/S/D)
+    const move = { forward: false, backward: false, left: false, right: false };
+
+    // Q + 마우스 드래그 회전
+    let isDragging = false;
+    const prevMouse = { x: 0, y: 0 };
+    const dragSpeed = 0.005;
+    let isQPressed = false;
+
+    // 좌석 배치 상수
+    const rows = 12, cols = 22, gap = 50, stepHeight = 5, rowSpacing = 20, inclinePerRow = 2;
+
+    // 천장 형광등용
+    const ceilingPanels = [];               // { light: RectAreaLight, mesh: Mesh } 배열
+    const baseCeilingIntensity = 10;        // 기본 광원 강도
+
+    // 스크린 영상 및 면광원(RectAreaLight) 관련
+    let videoElement, videoTexture, videoCanvas, videoCtx;
+    let screenAreaLight, screenMesh;         // RectAreaLight + Plane Mesh
+    const baseScreenIntensity = 5;           // 기본 광원 강도
+
+    // AmbientLight 및 DirectionalLight
+    let ambientLight, dirLight;
+
+    // 고/저사양 모드 플래그
+    let highQualityMode = true;
+
+
+    //========================================
+    // 1) Three.js 초기화: scene, camera, renderer, cssRenderer
+    //========================================
+    function initThree() {
+      // 씬
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x000000);
+
+      // 카메라
+      camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 2000);
+      camera.position.set(0, 300, 600);
+      origCamPos.copy(camera.position);
+      origCamLookAt.set(0, 0, -385);
+      camera.lookAt(origCamLookAt);
+
+      // WebGLRenderer
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.domElement.style.position = 'absolute';
+      renderer.domElement.style.top = '0';
+      renderer.domElement.style.left = '0';
+      renderer.domElement.style.zIndex = '0';           // 캔버스는 최하단
+      renderer.domElement.style.pointerEvents = 'none';  // 클릭은 CSS3D 레이어로 넘어감
+      renderer.physicallyCorrectLights = true;           // 물리 단위 조명 활성화
+      document.body.appendChild(renderer.domElement);
+
+      // CSS3DRenderer
+      cssRenderer = new CSS3DRenderer();
+      cssRenderer.domElement.classList.add('css3d-container');
+      cssRenderer.domElement.style.position = 'absolute';
+      cssRenderer.domElement.style.top = '0';
+      cssRenderer.domElement.style.left = '0';
+      cssRenderer.domElement.style.zIndex = '1';        // WebGL 위
+      cssRenderer.domElement.style.pointerEvents = 'auto';
+      cssRenderer.setSize(window.innerWidth, window.innerHeight);
+      document.getElementById('css3d-root').appendChild(cssRenderer.domElement);
+    }
+
+    //========================================
+    // 2) AmbientLight + DirectionalLight 생성
+    //========================================
+    function initLights() {
+      // AmbientLight
+      ambientLight = new THREE.AmbientLight(0xffffff, 0.1);
+      scene.add(ambientLight);
+
+      // DirectionalLight (그림자 생성용)
+      dirLight = new THREE.DirectionalLight(0xffffff, 0.3);
+      dirLight.position.set(100, 200, 100);
+      dirLight.castShadow = true;
+      dirLight.shadow.camera.left = -600;
+      dirLight.shadow.camera.right = 600;
+      dirLight.shadow.camera.top = 600;
+      dirLight.shadow.camera.bottom = -600;
+      dirLight.shadow.camera.near = 1;
+      dirLight.shadow.camera.far = 1000;
+      dirLight.shadow.mapSize.set(2048, 2048);
+      scene.add(dirLight);
+    }
+
+    //========================================
+    // 3) 천장 매쉬 생성 (MeshStandardMaterial)
+    //========================================
+    function createCeiling() {
+      const ceilingWidth = cols * gap + 200;       // 1300
+      const backWallZ = -rows * (gap + rowSpacing) - 100; // -940
+      const frontZ = 900;
+      const ceilingDepth = (frontZ - backWallZ) + 200;       // 2040
+
+      const ceilingGeom = new THREE.PlaneGeometry(ceilingWidth, ceilingDepth);
+      const ceilingMat = new THREE.MeshStandardMaterial({
+        color: 0x222222,
+        roughness: 0.6,
+        side: THREE.DoubleSide
+      });
+      const ceilingMesh = new THREE.Mesh(ceilingGeom, ceilingMat);
+      ceilingMesh.rotation.x = Math.PI / 2;
+      ceilingMesh.position.set(0, 450, (frontZ + backWallZ) / 2);
+      ceilingMesh.receiveShadow = true;
+      scene.add(ceilingMesh);
+    }
+
+    //========================================
+    // 4) 천장 형광등 패널 생성 (RectAreaLight + Mesh)
+    //========================================
+    function createCeilingPanels() {
+      const ceilingWidth = cols * gap + 200;       // 1300
+      const backWallZ = -rows * (gap + rowSpacing) - 100; // -940
+      const frontZ = 900;
+      const ceilingDepth = (frontZ - backWallZ) + 200;       // 2040
+
+      // 2행 × 3열 → x = -ceilingWidth/4, 0, +ceilingWidth/4; z = -ceilingDepth/4, +ceilingDepth/4
+      const xCoords = [-ceilingWidth / 4, 0, ceilingWidth / 4];
+      const zCoords = [-ceilingDepth / 4, ceilingDepth / 4];
+
+      // 패널 크기 (너비, 깊이)
+      const panelW = ceilingWidth / 3 - 20;  // 약 400
+      const panelD = ceilingDepth / 3 - 20;  // 약 660
+      const panelH = 2;                      // 얇게 붙어 있도록
+
+      // 매터리얼 템플릿 (emissive 포함)
+      const fixtureMatTemplate = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        emissive: 0xffffff,
+        emissiveIntensity: 1.0,
+        roughness: 0.2,
+        metalness: 0.0
+      });
+
+      xCoords.forEach(xPos => {
+        zCoords.forEach(zPos => {
+          // (A) 매쉬 – 형광등 육면체 형태
+          const fixtureGeom = new THREE.BoxGeometry(panelW, panelH, panelD);
+          const fixtureMat = fixtureMatTemplate.clone();
+          const fixtureMesh = new THREE.Mesh(fixtureGeom, fixtureMat);
+          fixtureMesh.position.set(xPos, 449, zPos);
+          fixtureMesh.receiveShadow = false;
+          fixtureMesh.castShadow = false;
+          scene.add(fixtureMesh);
+
+          // (B) RectAreaLight – 면광원 역할
+          const rectLight = new THREE.RectAreaLight(
+            0xffffff,
+            baseCeilingIntensity, // 초기 강도
+            panelW,
+            panelD
+          );
+          rectLight.position.set(xPos, 449, zPos);
+          // 아래쪽(바닥) 방향을 향하도록
+          rectLight.lookAt(xPos, 0, zPos);
+          rectLight.castShadow = false;  // RectAreaLight는 직접 그림자 생성 못함
+          scene.add(rectLight);
+
+          // 배열에 저장
+          ceilingPanels.push({ light: rectLight, mesh: fixtureMesh });
+        });
+      });
+    }
+
+    //========================================
+    // 5) 계단식 바닥 생성 (MeshStandardMaterial + 그림자)
+    //========================================
+    function createSeatingFloor() {
+      const totalWidth = cols * gap + 100;    // 1200
+      const baseDepth = gap + rowSpacing;    // 70
+      const pieceDepth = baseDepth + 0.1;     // 70.1
+      const pieceHeight = stepHeight;          // 5
+
+      // (1) 무대 앞(스크린 앞 z=600) ~ row0 위 바닥
+      const frontDepthStart = pieceDepth;       // 70.1
+      const frontDepthEnd = 600;              // 스크린 앞면
+      const frontDepth = frontDepthEnd - frontDepthStart; // 529.9
+      const frontCenterZ = frontDepthStart + frontDepth / 2; // 335.05
+      const frontCenterY = -pieceHeight / 2;                 // -2.5
+
+      const frontGeom = new THREE.BoxGeometry(totalWidth, pieceHeight, frontDepth);
+      const frontMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.6 });
+      const frontMesh = new THREE.Mesh(frontGeom, frontMat);
+      frontMesh.position.set(0, frontCenterY, frontCenterZ);
+      frontMesh.receiveShadow = true;
+      frontMesh.castShadow = true;
+      scene.add(frontMesh);
+
+      // (2) 각 행별 계단 블록
+      for (let row = 0; row < rows; row++) {
+        const topY = row * stepHeight + inclinePerRow * row;
+        const centerY = topY - pieceHeight / 2;
+        const centerZ = -row * (gap + rowSpacing) + pieceDepth / 2;
+
+        const geom = new THREE.BoxGeometry(totalWidth, pieceHeight, pieceDepth + 20);
+        const mat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.6 });
+        const mesh = new THREE.Mesh(geom, mat);
+        mesh.position.set(0, centerY, centerZ + 10);
+        mesh.receiveShadow = true;
+        mesh.castShadow = true;
+        scene.add(mesh);
+      }
+
+      // (3) 마지막 행 뒤쪽 빈틈 메우기
+      const lastRow = rows - 1;
+      const lastTopY = lastRow * stepHeight + inclinePerRow * lastRow;
+      const lastCenterY = lastTopY - pieceHeight / 2;
+      const backWallZ = -rows * (gap + rowSpacing) - 100;       // -940
+      const lastFrontFaceZ = -lastRow * (gap + rowSpacing);         // -770
+      const backDepth = Math.abs(backWallZ - lastFrontFaceZ) + 0.1; // 170.1
+      const backCenterZ = backWallZ + backDepth / 2;                // -854.95
+
+      const backGeom = new THREE.BoxGeometry(totalWidth, pieceHeight, backDepth);
+      const backMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.6 });
+      const backMesh = new THREE.Mesh(backGeom, backMat);
+      backMesh.position.set(0, lastCenterY, backCenterZ);
+      backMesh.receiveShadow = true;
+      backMesh.castShadow = true;
+      scene.add(backMesh);
+    }
+
+    //========================================
+    // 6) 의자 생성 함수 (MeshPhysicalMaterial + 그림자)
+    //========================================
+    function createSeat(x, y, z) {
+      const group = new THREE.Group();
+
+      // 좌판
+      const seatMat = new THREE.MeshPhysicalMaterial({ color: 0xaa0000, roughness: 0.6 });
+      const seat = new THREE.Mesh(new THREE.BoxGeometry(40, 10, 40), seatMat);
+      seat.position.set(0, 10, 0);
+      seat.castShadow = true;
+      seat.receiveShadow = true;
+
+      // 등받이
+      const backMat = new THREE.MeshPhysicalMaterial({ color: 0xaa0000, roughness: 0.6 });
+      const back = new THREE.Mesh(new THREE.BoxGeometry(40, 40, 10), backMat);
+      back.position.set(0, 35, -15);
+      back.castShadow = true;
+      back.receiveShadow = true;
+
+      // 팔걸이
+      const armMat = new THREE.MeshStandardMaterial({ color: 0xd9c69c, roughness: 0.8 });
+      const armL = new THREE.Mesh(new THREE.BoxGeometry(5, 40, 40), armMat);
+      armL.position.set(-22.5, 25, 0);
+      armL.castShadow = true;
+      armL.receiveShadow = true;
+      const armR = new THREE.Mesh(new THREE.BoxGeometry(5, 40, 40), armMat);
+      armR.position.set(22.5, 25, 0);
+      armR.castShadow = true;
+      armR.receiveShadow = true;
+
+      group.add(seat, back, armL, armR);
+      group.position.set(x, y, z);
+      group.userData.isSeatGroup = true;
+      group.userData.seat = seat;
+      group.userData.back = back;
+
+      scene.add(group);
+      return group;
+    }
+
+    //========================================
+    // 7) 무대 및 벽 생성 함수 (스크린 포함)
+    //========================================
+    let stage;
+    function createStageAndWalls() {
+      // (1) 뒤쪽 벽: 1600×450×10 (z = -940)
+      const backWallZ = -rows * (gap + rowSpacing) - 100; // -940
+      const backWallGeom = new THREE.BoxGeometry(1600, 450, 10);
+      const backWallMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.7 });
+      const backWallMesh = new THREE.Mesh(backWallGeom, backWallMat);
+      backWallMesh.position.set(0, 225, backWallZ);
+      backWallMesh.receiveShadow = true;
+      scene.add(backWallMesh);
+
+      // (2) 좌/우 측면 벽: 10×450×1840 (z 중앙=-20)
+      const frontZ = 900;
+      const sideWallDepth = frontZ - backWallZ; // 1840
+      const sideWallGeom = new THREE.BoxGeometry(10, 450, sideWallDepth);
+      const sideWallMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.7 });
+
+      const leftWallX = -(cols * gap / 2 + 50);
+      const rightWallX = (cols * gap / 2 + 50);
+
+      const leftWallMesh = new THREE.Mesh(sideWallGeom, sideWallMat);
+      leftWallMesh.position.set(leftWallX, 225, (backWallZ + frontZ) / 2);
+      leftWallMesh.receiveShadow = true;
+      scene.add(leftWallMesh);
+
+      const rightWallMesh = new THREE.Mesh(sideWallGeom, sideWallMat);
+      rightWallMesh.position.set(rightWallX, 225, (backWallZ + frontZ) / 2);
+      rightWallMesh.receiveShadow = true;
+      scene.add(rightWallMesh);
+
+      // (3) 무대: 1200×20×300 (y=10, z=750)
+      const stageWidth = cols * gap + 100; // 1200
+      const stageDepth = 300;
+      const stageGeom = new THREE.BoxGeometry(stageWidth, 20, stageDepth);
+      const stageMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.5 });
+      stage = new THREE.Mesh(stageGeom, stageMat);
+      stage.position.set(0, 10, 750);
+      stage.castShadow = true;
+      stage.receiveShadow = true;
+      scene.add(stage);
+
+      // 스크린: PlaneGeometry(1200×300), y=160, z=900, 양면 모두 보이게 수정
+      const screenGeom = new THREE.BoxGeometry(768, 432, 20);
+      screenMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(768, 432, 20),
+        new THREE.MeshStandardMaterial({
+          color: 0x000000,
+          emissive: 0x000000,
+          roughness: 0.4,
+          metalness: 0.2,
+          side: THREE.DoubleSide
+        })
+      );
+      screenMesh.position.set(0, 250, 900);
+      screenMesh.rotation.y = Math.PI;
+      scene.add(screenMesh);
+
+      window.screenMesh = screenMesh;
+
+      // (5) 스크린 뒤 짧은 벽: 1200×450×10 (y=225, z=900)
+      const backOfScreenGeom = new THREE.BoxGeometry(stageWidth, 450, 10);
+      const backOfScreenMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.7 });
+      const backOfScreenMesh = new THREE.Mesh(backOfScreenGeom, backOfScreenMat);
+      backOfScreenMesh.position.set(0, 225, 900);
+      backOfScreenMesh.receiveShadow = true;
+      scene.add(backOfScreenMesh);
+      console.log(screenMesh); // 추가한 메쉬가 확실히 씬에 있는지 확인하기 위해 콘솔에 출력
+    }
+
+    //========================================
+    // 8) 문 생성 함수 (그림자 포함)
+    //========================================
+    let doorLeftPivot, doorRightPivot;
+    function createDoors() {
+      const doorHeight = 80;
+      const doorWidth = 50;
+      const doorThickness = 10;
+      const doorZ = 300;
+      const leftWallX = -(cols * gap / 2 + 50);
+      const rightWallX = (cols * gap / 2 + 50);
+
+      // 왼쪽 문 Pivot
+      doorLeftPivot = new THREE.Object3D();
+      doorLeftPivot.position.set(leftWallX + doorThickness / 2, doorHeight / 2, doorZ);
+      scene.add(doorLeftPivot);
+
+      const doorLeftGeom = new THREE.BoxGeometry(doorThickness, doorHeight, doorWidth);
+      const doorLeftMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.5 });
+      const doorLeftMesh = new THREE.Mesh(doorLeftGeom, doorLeftMat);
+      doorLeftMesh.position.set(doorThickness / 2, 0, 0);
+      doorLeftMesh.name = "doorLeft";
+      doorLeftMesh.userData.isDoor = true;
+      doorLeftMesh.castShadow = true;
+      doorLeftMesh.receiveShadow = true;
+      doorLeftPivot.add(doorLeftMesh);
+      clickableGroups.push(doorLeftMesh);
+
+      // 오른쪽 문 Pivot
+      doorRightPivot = new THREE.Object3D();
+      doorRightPivot.position.set(rightWallX - doorThickness / 2, doorHeight / 2, doorZ);
+      scene.add(doorRightPivot);
+
+      const doorRightGeom = new THREE.BoxGeometry(doorThickness, doorHeight, doorWidth);
+      const doorRightMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.5 });
+      const doorRightMesh = new THREE.Mesh(doorRightGeom, doorRightMat);
+      doorRightMesh.position.set(-doorThickness / 2, 0, 0);
+      doorRightMesh.name = "doorRight";
+      doorRightMesh.userData.isDoor = true;
+      doorRightMesh.castShadow = true;
+      doorRightMesh.receiveShadow = true;
+      doorRightPivot.add(doorRightMesh);
+      clickableGroups.push(doorRightMesh);
+
+      doorLeftPivot.userData.isOpen = false;
+      doorRightPivot.userData.isOpen = false;
+      doorLeftPivot.userData.targetY = 0;
+      doorRightPivot.userData.targetY = 0;
+    }
+
+    //========================================
+    // 9) 문 열림/닫힘 토글 함수
+    //========================================
+    function toggleDoors() {
+      const openAngle = Math.PI / 2;
+      if (doorLeftPivot.userData.isOpen) {
+        doorLeftPivot.userData.targetY = 0;
+        doorRightPivot.userData.targetY = 0;
+      } else {
+        doorLeftPivot.userData.targetY = -openAngle;
+        doorRightPivot.userData.targetY = openAngle;
+      }
+      doorLeftPivot.userData.isOpen = !doorLeftPivot.userData.isOpen;
+      doorRightPivot.userData.isOpen = !doorRightPivot.userData.isOpen;
+    }
+
+    //========================================
+    // 10) 좌석 클릭 → 하이라이트 + 예약 UI 생성
+    //========================================
+    window.addEventListener('pointerdown', event => {
+      if (!controlsEnabled) return;
+      mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObjects(clickableGroups, true);
+
+      for (let i = 0; i < intersects.length; i++) {
+        const obj = intersects[i].object;
+        // (1) 문 클릭 시
+        if (obj.userData.isDoor) {
+          toggleDoors();
+          return;
+        }
+        // (2) 좌석 클릭 시
+        const group = obj.userData.isSeatGroup ? obj : obj.parent;
+        if (group && group.userData.isSeatGroup) {
+          // 이전 선택 취소
+          if (selectedSeat) {
+            selectedSeat.userData.seat.material = new THREE.MeshPhysicalMaterial({ color: 0xaa0000, roughness: 0.6 });
+            selectedSeat.userData.back.material = new THREE.MeshPhysicalMaterial({ color: 0xaa0000, roughness: 0.6 });
+          }
+          selectedSeat = group;
+          selectedSeat.userData.seat.material = new THREE.MeshStandardMaterial({ color: 0x00aaff, roughness: 0.4 });
+          selectedSeat.userData.back.material = new THREE.MeshStandardMaterial({ color: 0x00aaff, roughness: 0.4 });
+          showReservationUI(selectedSeat);
+          return;
+        }
+      }
+    });
+
+    //========================================
+    // 11) 예약 UI 생성 함수 (CSS3DObject)
+    //========================================
+    let reservationUI = null;
+    function showReservationUI(seatGroup) {
+      if (reservationUI) {
+        scene.remove(reservationUI);
+        reservationUI = null;
+      }
+      const uiDiv = document.createElement('div');
+      uiDiv.classList.add('screen-ui');
+      uiDiv.innerHTML = `<button id="reserveBtn">예약하기</button>`;
+      const uiObject = new CSS3DObject(uiDiv);
+
+      const seatPos = seatGroup.position;
+      uiObject.position.set(seatPos.x, seatPos.y + 50, seatPos.z);
+      scene.add(uiObject);
+      reservationUI = uiObject;
+
+      const reserveBtn = uiDiv.querySelector('#reserveBtn');
+      reserveBtn.addEventListener('pointerdown', e => e.stopPropagation());
+      reserveBtn.addEventListener('click', () => {
+        reserveBtn.style.backgroundColor = '#ddd';
+        controlsEnabled = false;
+        setTimeout(() => {
+          reservationUI.element.style.display = 'none';
+          origCamPos.copy(camera.position);
+          const forwardDir = new THREE.Vector3();
+          camera.getWorldDirection(forwardDir);
+          origCamLookAt.copy(camera.position.clone().add(forwardDir.multiplyScalar(100)));
+
+          const targetSeatPos = seatGroup.position.clone();
+          cameraTargetPos.set(
+            targetSeatPos.x,
+            targetSeatPos.y + 100,
+            targetSeatPos.z + 150
+          );
+          cameraTargetLookAt.set(
+            0,
+            targetSeatPos.y + 50,
+            900
+          );
+          cameraMoving = true;
+          showBackButtonOnArrival = true;
+        }, 50);
+      });
+    }
+
+    //========================================
+    // 12) 마우스 드래그 회전 (Q 누르고 있을 때만)
+    //========================================
+    window.addEventListener('mousedown', event => {
+      if (!controlsEnabled) return;
+      isDragging = true;
+      prevMouse.x = event.clientX;
+      prevMouse.y = event.clientY;
+    });
+    window.addEventListener('mousemove', event => {
+      if (!controlsEnabled || !isDragging) return;
+      if (!isQPressed) return;  // Q키 눌렀을 때만 회전
+
+      const deltaX = event.clientX - prevMouse.x;
+      const deltaY = event.clientY - prevMouse.y;
+
+      // Y축 회전 (yaw)
+      camera.rotation.y -= deltaX * dragSpeed;
+      // X축 회전 (pitch)
+      camera.rotation.x -= deltaY * dragSpeed;
+
+      // X축(피치) 제한
+      const pitchLimit = Math.PI / 2 - 0.01;
+      camera.rotation.x = Math.max(-pitchLimit, Math.min(pitchLimit, camera.rotation.x));
+
+      prevMouse.x = event.clientX;
+      prevMouse.y = event.clientY;
+    });
+    window.addEventListener('mouseup', () => {
+      isDragging = false;
+    });
+
+    //========================================
+    // 13) 키보드 리스너 (W/A/S/D 이동 + Q 상태)
+    //========================================
+    window.addEventListener('keydown', event => {
+      if (!controlsEnabled) return;
+      switch (event.code) {
+        case 'KeyW': move.forward = true; break;
+        case 'KeyS': move.backward = true; break;
+        case 'KeyA': move.left = true; break;
+        case 'KeyD': move.right = true; break;
+        case 'KeyQ': isQPressed = true; break;
+      }
+    });
+    window.addEventListener('keyup', event => {
+      if (!controlsEnabled) {
+        if (event.code === 'KeyQ') isQPressed = false;
+        return;
+      }
+      switch (event.code) {
+        case 'KeyW': move.forward = false; break;
+        case 'KeyS': move.backward = false; break;
+        case 'KeyA': move.left = false; break;
+        case 'KeyD': move.right = false; break;
+        case 'KeyQ': isQPressed = false; break;
+      }
+    });
+
+    //========================================
+    // 14) 창 크기 변경 리스너
+    //========================================
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      cssRenderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    //========================================
+    // 15) 스크린 영상 & 면광원(RectAreaLight) 초기화
+    //========================================
+    function initScreenVideoAndLight() {
+      // HTML5 Video 요소 생성
+      videoElement = document.createElement('video');
+      videoElement.crossOrigin = 'anonymous';
+      videoElement.loop = true;
+      videoElement.volume = 0.2;
+      //videoElement.muted = true;
+      videoElement.playsInline = true;  // ✅ iOS 등 모바일 호환
+      videoElement.autoplay = false;    // ✅ 수동 재생 우선
+      // ▶ src는 파일 선택 시 Blob URL로 설정
+      window.videoElement = videoElement;
+
+      // VideoTexture 생성
+      videoElement.addEventListener('loadeddata', () => {
+        videoTexture = new THREE.VideoTexture(videoElement);
+        videoTexture.minFilter = THREE.LinearFilter;
+        videoTexture.magFilter = THREE.LinearFilter;
+        videoTexture.format = THREE.RGBAFormat;
+        videoTexture.needsUpdate = true;
+
+        // ShaderMaterial 유니폼에도 새 텍스처 바인딩
+        customUniforms.uVideoTex.value = videoTexture;
+
+        // material.map 이나 ShaderMaterial 자체를 교체했다면,
+        // screenMesh.material.map = videoTexture; 
+        // 혹은 screenMesh.material = customMat;
+      }, { once: true });
+
+      // Screen Mesh(Plane)에 VideoTexture 적용
+      // 초기에는 명확한 기본 재질 지정
+      screenMesh.material = new THREE.MeshBasicMaterial({ color: 0x000000 });
+
+      // 비디오 로딩 후 텍스처 설정 (videoElement 로드 후)
+      videoElement.addEventListener('loadeddata', () => {
+        screenMesh.material.map = videoTexture;
+        screenMesh.material.needsUpdate = true; // 중요: 반드시 필요!
+      });
+
+      // 1×1 Canvas 로 평균 색상 계산 준비
+      videoCanvas = document.createElement('canvas');
+      videoCanvas.width = 768;
+      videoCanvas.height = 432;
+      videoCtx = videoCanvas.getContext('2d', { willReadFrequently: true });
+
+      // RectAreaLight – 스크린 면광원 (크기 = 600×300)
+      const screenWidth = 768;
+      const screenHeight = 432;
+      screenAreaLight = new THREE.RectAreaLight(
+        0xffffff,
+        0,             // 초기 강도 0, 파일 선택 후 업데이트
+        screenWidth,
+        screenHeight
+      );
+      // 스크린 바로 뒤 (관객 방향)으로 비추도록 배치
+      screenAreaLight.position.set(0, 250, 899);
+      //screenAreaLight.rotation.y = Math.PI; // 면광원이 앞(관객)으로 향하게
+      scene.add(screenAreaLight);
+
+      // 추가: 실제 그림자를 위한 스크린 앞쪽 PointLight
+      screenPointLight = new THREE.PointLight(0xffffff, 5, 1200, 2);
+      screenPointLight.castShadow = true;
+      screenPointLight.shadow.mapSize.set(4096, 4096);
+      screenPointLight.shadow.bias = -0.005;
+
+      screenPointLight.position.set(0, 250, 899);  // 스크린 앞쪽에서 관객을 비춤
+      scene.add(screenPointLight);
+
+      // ───────────────────────────────────────────────────────
+      // B) Phong 셰이더용 유니폼 & 머티리얼 생성
+      // ───────────────────────────────────────────────────────
+      const customUniforms = {
+        uVideoTex: { value: videoTexture },
+        lightPos: { value: screenPointLight.position.clone() },
+        viewPos: { value: camera.position.clone() },
+        ambientColor: { value: new THREE.Color(0.1, 0.1, 0.1) },
+        diffuseColor: { value: new THREE.Color(1, 1, 1) },
+        specularColor: { value: new THREE.Color(1, 1, 1) },
+        shininess: { value: 32.0 }
+      };
+
+      const customMat = new THREE.ShaderMaterial({
+        uniforms: customUniforms,
+        vertexShader: customVertexShader,
+        fragmentShader: customFragmentShader,
+        transparent: true
+      });
+      screenMesh.material = customMat;
+
+      // 전역 업데이트를 위해 보관
+      window.customUniforms = customUniforms;
+
+      // ✅ 여기부터 강제 테스트용 조정
+      /*screenPointLight.position.set(0, 400, 700);
+      screenPointLight.intensity = 200;
+      screenPointLight.color.set(0xffffff);*/
+
+      //console.log('screenPointLight:', screenPointLight);
+
+    }
+
+    //========================================
+    // 16) 동적 조명 업데이트 (애니메이션 루프 내 호출)
+    //========================================
+    function updateDynamicLights() {
+      if (!highQualityMode) return;
+      if (!videoElement || videoElement.readyState < 2) return;
+
+      // 캔버스로 평균 색상 추출
+      videoCtx.drawImage(videoElement, 0, 0, 768, 432);
+      const pixel = videoCtx.getImageData(0, 0, 1, 1).data;
+      const [r, g, b] = [pixel[0], pixel[1], pixel[2]];
+      const colorNorm = new THREE.Color(r / 255, g / 255, b / 255);
+
+      // 밝기 계산 (휘도)
+      const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+
+      // 스크린 면광원(RectAreaLight)에 적용
+      screenAreaLight.color.copy(colorNorm);
+      screenAreaLight.intensity = baseScreenIntensity * luminance * 2;
+
+      // ✅ 조명(PointLight)에도 적용
+      screenPointLight.color.copy(colorNorm);
+      screenPointLight.intensity = baseScreenIntensity * luminance * 1.1; // 약간 더 밝게
+
+      // ✅ 스크린 자체 재질도 발광 느낌 주기
+      if (screenMesh.material.emissive !== undefined) {
+        screenMesh.material.emissive.copy(colorNorm);
+        screenMesh.material.emissiveIntensity = luminance * 1;
+      }
+      window.customUniforms.lightPos.value.copy(screenPointLight.position);
+      window.customUniforms.viewPos.value.copy(camera.position);
+
+    }
+
+    //========================================
+    // 17) 고/저사양 모드 설정 함수
+    //========================================
+    function setHighQuality(on) {
+      highQualityMode = on;
+
+      const ceilingCtl = document.getElementById('ceilingLightControl');
+      const screenCtl = document.getElementById('screenLightControl');
+      const toggleBtn = document.getElementById('qualityToggle');
+
+      if (on) {
+        // — 고사양 모드: 스크린 광원으로만 조명 & 그림자!
+        ceilingCtl.style.display = 'flex';
+        screenCtl.style.display = 'flex';
+        toggleBtn.textContent = '저사양 모드로 변환';
+
+        // (1) 천장 조명은 그대로 유지
+        ceilingPanels.forEach(obj => {
+          obj.light.visible = true;
+          obj.mesh.visible = true;
+        });
+        ambientLight.intensity = 0.05;
+
+        // (2) 시스템 디렉셔널 라이트는 완전 꺼 버린다
+        dirLight.visible = false;
+        dirLight.castShadow = false;
+        dirLight.intensity = 0;
+
+        // (3) 스크린용 PointLight 켜서 이 녀석만 그림자 만들기
+        screenAreaLight.visible = true;
+        screenPointLight.visible = true;
+        screenPointLight.castShadow = true;
+
+        screenPointLight.intensity = baseScreenIntensity;  
+        // (옵션) 그림자 맵 해상도도 늘리고
+        screenPointLight.shadow.mapSize.set(4096, 4096);
+        // (옵션) 그림자 카메라 범위 조정
+        screenPointLight.shadow.camera.near = 0.5;
+        screenPointLight.shadow.camera.far  = 2000;
+
+
+      } else {
+        // — 저사양 모드: 모든 면광원 끄고 Ambient만
+        ceilingCtl.style.display = 'none';
+        screenCtl.style.display = 'none';
+        toggleBtn.textContent = '고사양 모드로 변환';
+
+        ceilingPanels.forEach(obj => {
+          obj.light.visible = false;
+          obj.mesh.visible = false;
+        });
+        ambientLight.intensity = 0.05;
+
+        // 스크린 광원도 끄고 그림자 안 만듦
+        screenAreaLight.visible = false;
+        screenPointLight.visible = false;
+        screenPointLight.castShadow = false;
+
+        // 디렉셔널도 완전 꺼
+        dirLight.visible = false;
+        dirLight.castShadow = false;
+        dirLight.intensity = 0;
+      }
+    }
+
+    //========================================
+    // 18) animate() 루프 (렌더 + 카메라/조명 업데이트)
+    //========================================
+    function animate() {
+      requestAnimationFrame(animate);
+
+      // (1) 문 애니메이션, 카메라 이동 등 기존 로직...
+      const lerpSpeed = 0.1;
+      if (doorLeftPivot) {
+        doorLeftPivot.rotation.y = THREE.MathUtils.lerp(
+          doorLeftPivot.rotation.y,
+          doorLeftPivot.userData.targetY,
+          lerpSpeed
+        );
+        doorRightPivot.rotation.y = THREE.MathUtils.lerp(
+          doorRightPivot.rotation.y,
+          doorRightPivot.userData.targetY,
+          lerpSpeed
+        );
+      }
+
+      if (cameraMoving) {
+        camera.position.lerp(cameraTargetPos, 0.05);
+        camera.lookAt(cameraTargetLookAt);
+        if (camera.position.distanceTo(cameraTargetPos) < 1) {
+          cameraMoving = false;
+          if (showBackButtonOnArrival) {
+            document.getElementById('backBtn').style.display = 'block';
+            showBackButtonOnArrival = false;
+          }
+        }
+      }
+
+      if (reservationUI) {
+        reservationUI.lookAt(camera.position);
+      }
+
+      // (2) 키보드 이동 로직...
+      if (controlsEnabled) {
+        const speed = 2.5;
+        const forwardVec = new THREE.Vector3();
+        camera.getWorldDirection(forwardVec);
+        forwardVec.y = 0; forwardVec.normalize();
+        const rightVec = new THREE.Vector3();
+        rightVec.crossVectors(forwardVec, camera.up).normalize();
+
+        if (move.forward) camera.position.add(forwardVec.clone().multiplyScalar(speed));
+        if (move.backward) camera.position.add(forwardVec.clone().multiplyScalar(-speed));
+        if (move.left) camera.position.add(rightVec.clone().multiplyScalar(-speed));
+        if (move.right) camera.position.add(rightVec.clone().multiplyScalar(speed));
+      }
+
+      // (3) — 여기서 “no video” 오류 방지 체크
+      if (videoElement && videoElement.readyState >=
+                 HTMLMediaElement.HAVE_CURRENT_DATA) {
+        // 비디오 프레임이 준비된 경우에만 GPU로 업로드
+        videoTexture.needsUpdate = true;
+        // 조명 업데이트
+        updateDynamicLights();
+      }
+
+      // (4) 렌더
+      renderer.render(scene, camera);
+      cssRenderer.render(scene, camera);
+    }
+    //========================================
+    // 19) Wall UI 생성 함수 (파일 선택 → Blob URL → 재생)
+    //========================================
+    let videoInputObject;
+    function createWallUI() {
+      // 스크린 중심 = (0,160,900), 높이=300 → topOfScreenY=310
+      // UI는 화면 아래로 살짝(70) 내린 위치 → uiY=240, uiZ=901
+      const topOfScreenY = screenMesh.position.y + 150; // 310
+      const uiY = topOfScreenY - 70;                    // 240
+      const uiZ = screenMesh.position.z + 1;            // 901
+      const uiX = screenMesh.position.x;                // 0
+
+      // (1) 파일 선택(input[type=file]) DIV 생성
+      const videoInputDiv = document.createElement('div');
+      videoInputDiv.classList.add('screen-ui');
+      videoInputDiv.innerHTML = `
+      <input type="file" id="videoFileInput" accept="video/mp4,video/webm" />
+      <button id="playVideoBtn" disabled>재생</button>
+    `;
+      videoInputObject = new CSS3DObject(videoInputDiv);
+      videoInputObject.position.set(uiX, uiY - 280, uiZ);
+      videoInputObject.rotation.copy(screenMesh.rotation);
+      scene.add(videoInputObject);
+
+      const fileInput = videoInputDiv.querySelector('#videoFileInput');
+      const playBtn = videoInputDiv.querySelector('#playVideoBtn');
+
+      // (2) 사용자가 파일을 선택했을 때 → Blob URL 생성
+      fileInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        // MP4, WEBM 등만 허용
+        if (!file.type.startsWith('video/')) {
+          alert('비디오 파일(.mp4/.webm 등)만 선택해주세요.');
+          return;
+        }
+        // 기존 재생 중이던 비디오가 있으면 정지
+        if (videoElement) {
+          videoElement.pause();
+        }
+        // Blob URL 만들기
+        const blobURL = URL.createObjectURL(file);
+        videoElement.src = blobURL;
+        videoElement.load();
+
+        // ✅ 항상 새로 텍스처 생성 (첫 선택 포함)
+        videoTexture = new THREE.VideoTexture(videoElement);
+        videoTexture.minFilter = THREE.LinearFilter;
+        videoTexture.magFilter = THREE.LinearFilter;
+        videoTexture.format = THREE.RGBAFormat;
+        videoTexture.needsUpdate = true;
+
+        // ✅ 재질이 없거나 초기화되지 않았다면 명시적으로 생성
+        screenMesh.material = new THREE.MeshBasicMaterial({
+          map: videoTexture,
+          side: THREE.DoubleSide,
+          toneMapped: false
+        });
+
+        // ✅ loadeddata: 첫 프레임 표시 + 정지
+        videoElement.addEventListener('loadeddata', () => {
+          videoElement.currentTime = 0;
+          videoElement.pause(); // 자동 재생 안함
+
+          // 다시 한번 map 지정 + 갱신
+          screenMesh.material.map = videoTexture;
+          screenMesh.material.needsUpdate = true;
+        }, { once: true });
+
+        // “재생” 버튼 활성화
+        playBtn.disabled = false;
+      });
+
+      // (3) “재생” 버튼을 눌렀을 때 → Blob URL로 세팅된 videoElement.play()
+      playBtn.addEventListener('click', () => {
+        if (!videoElement.src) return;
+
+        // 새로 텍스처 생성
+        videoTexture = new THREE.VideoTexture(videoElement);
+        videoTexture.minFilter = THREE.LinearFilter;
+        videoTexture.magFilter = THREE.LinearFilter;
+        videoTexture.format = THREE.RGBAFormat;
+        videoTexture.needsUpdate = true;
+
+        // ✅ 이 부분 핵심!
+        screenMesh.material = new THREE.MeshBasicMaterial({
+          map: videoTexture,
+          side: THREE.DoubleSide,
+          toneMapped: false,
+          transparent: false,
+          depthWrite: true
+        });
+        screenMesh.material.needsUpdate = true;
+
+        videoElement.play().then(() => {
+          console.log('비디오 재생 성공');
+          videoInputObject.element.style.display = 'none';
+        });
+      });
+    }
+
+    //========================================
+    // 20) 메인 실행 함수
+    //========================================
+    function main() {
+      initThree();
+      initLights();
+
+      const fontLoader = new FontLoader();
+      fontLoader.load(
+        'https://threejs.org/examples/fonts/helvetiker_regular.typeface.json',
+        font => {
+          // (1) 계단식 바닥 + 좌석/라벨
+          createSeatingFloor();
+          for (let row = 0; row < rows; row++) {
+            const y = row * stepHeight + inclinePerRow * row;
+            const z = -row * gap - row * rowSpacing;
+            for (let col = 0; col < cols; col++) {
+              if (col === 10 || col === 11) continue; // 중앙 통로 비우기
+              let displayIndex = col < 10 ? col : col - 2;
+              const labelText = `${String.fromCharCode(65 + row)}${displayIndex + 1}`;
+              const x = (col - cols / 2) * gap + gap / 2;
+
+              // 라벨 (MeshBasicMaterial: 빛 영향 안 받음)
+              const textGeo = new TextGeometry(labelText, { font: font, size: 10, height: 1 });
+              const labelMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+              const labelMesh = new THREE.Mesh(textGeo, labelMat);
+              labelMesh.position.set(x - 15, y + 45, z);
+              scene.add(labelMesh);
+
+              // 의자
+              const seatGroup = createSeat(x, y, z);
+              clickableGroups.push(seatGroup);
+            }
+            // 계단 앞 흰색 경로
+            const centerY = row * stepHeight + inclinePerRow * row - (stepHeight / 2);
+            const lineZ = -row * (gap + rowSpacing) + 1;
+            const lineGeom = new THREE.BoxGeometry(cols * gap + 100, 0.1, 2);
+            const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+            const lineMesh = new THREE.Mesh(lineGeom, lineMat);
+            lineMesh.position.set(0, centerY + 0.05, lineZ);
+            scene.add(lineMesh);
+          }
+
+          // (2) 무대/벽/천장/문/스크린
+          createStageAndWalls();
+          createCeiling();
+          createDoors();
+
+          // (3) 천장 형광등 (RectAreaLight + Mesh)
+          createCeilingPanels();
+
+          // (4) 스크린 면광원 초기화 (RectAreaLight + VideoTexture)
+          initScreenVideoAndLight();
+
+          // (5) Wall UI (파일 선택 + 재생)
+          createWallUI();
+
+          // (6) “돌아가기” 버튼 이벤트
+          const backBtn = document.getElementById('backBtn');
+          backBtn.addEventListener('click', () => {
+            controlsEnabled = true;
+            cameraTargetPos.copy(origCamPos);
+            cameraTargetLookAt.copy(origCamLookAt);
+            cameraMoving = true;
+            showBackButtonOnArrival = true;
+            backBtn.style.display = 'none';
+          });
+
+          // (7) 천장 밝기 슬라이더 이벤트
+          const ceilingSlider = document.getElementById('ceilingSlider');
+          ceilingSlider.addEventListener('input', () => {
+            const value = parseFloat(ceilingSlider.value);
+            ceilingPanels.forEach(obj => {
+              obj.light.intensity = baseCeilingIntensity * value;
+
+              if (obj.mesh.material.emissive) {
+                obj.mesh.material.emissiveIntensity = value;
+                if (value === 0) {
+                  // 0일 때 완전히 꺼진 느낌으로 → 색상까지 제거
+                  obj.mesh.material.emissive.set(0x000000);
+                } else {
+                  // 밝기 올릴 때는 색 복구
+                  obj.mesh.material.emissive.set(0xffffff);
+                }
+              }
+            });
+          });
+
+          // (8) 스크린 밝기 슬라이더 이벤트
+          const screenSlider = document.getElementById('screenSlider');
+          screenSlider.addEventListener('input', () => {
+            const value = parseFloat(screenSlider.value);
+            screenAreaLight.intensity = baseScreenIntensity * value;
+          });
+
+          // (9) 품질 토글 버튼 이벤트
+          const toggleBtn = document.getElementById('qualityToggle');
+          toggleBtn.addEventListener('click', () => {
+            setHighQuality(!highQualityMode);
+          });
+
+          // 초기 모드를 “고사양”으로 설정
+          setHighQuality(true);
+        },
+        undefined,
+        err => console.error("Font loading failed:", err)
+      );
+
+      animate();
+      // ✅ 비디오 재생 상태 확인용 로그
+      setInterval(() => {
+        if (videoElement && !videoElement.paused) {
+          console.log('재생 중 / 시간:', videoElement.currentTime.toFixed(2));
+        }
+      }, 1000);
+    }
+
+    main();
+  </script>
+</body>
+
+</html>
